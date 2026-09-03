@@ -7,24 +7,103 @@ echo "========================================"
 echo " INSTALL DOCKER"
 echo "========================================"
 
-# Nếu Docker đã tồn tại thì không cài lại
+# User thật đang chạy script
+TARGET_USER="${SUDO_USER:-$USER}"
+
+echo "User: $TARGET_USER"
+
+# ============================================================
+# Kiểm tra Docker + Docker Compose
+# ============================================================
+
 if command -v docker >/dev/null 2>&1; then
-    echo "Docker đã được cài."
-    docker --version
-    exit 0
+    echo "Phát hiện Docker:"
+    docker --version || true
+
+    if docker compose version >/dev/null 2>&1; then
+        echo "Docker Compose:"
+        docker compose version
+
+        echo
+        echo "Docker + Docker Compose đã được cài đầy đủ."
+        exit 0
+    fi
+
+    echo
+    echo "Docker đã tồn tại nhưng Docker Compose chưa có."
+    echo "Tiếp tục cài Docker Compose / Docker official..."
 fi
 
-echo "[1/5] Update apt..."
+# ============================================================
+# Kiểm tra Ubuntu
+# ============================================================
+
+if [ ! -f /etc/os-release ]; then
+    echo "Không xác định được hệ điều hành."
+    exit 1
+fi
+
+. /etc/os-release
+
+if [ "$ID" != "ubuntu" ]; then
+    echo "Script này chỉ hỗ trợ Ubuntu."
+    echo "OS hiện tại: $ID"
+    exit 1
+fi
+
+echo "Ubuntu: $VERSION_ID"
+echo "Codename: ${UBUNTU_CODENAME:-$VERSION_CODENAME}"
+echo
+
+# ============================================================
+# Update apt
+# ============================================================
+
+echo "[1/6] Update apt..."
+
 sudo apt update
 
-echo "[2/5] Install dependencies..."
+# ============================================================
+# Dependencies
+# ============================================================
+
+echo "[2/6] Install dependencies..."
+
 sudo apt install -y \
     ca-certificates \
     curl
 
-echo "[3/5] Add Docker GPG key..."
+# ============================================================
+# Remove Docker packages có thể conflict
+# ============================================================
+
+echo "[3/6] Remove conflicting Docker packages..."
+
+for pkg in \
+    docker.io \
+    docker-compose \
+    docker-compose-v2 \
+    docker-doc \
+    docker-buildx \
+    podman-docker \
+    containerd \
+    runc
+do
+    if dpkg -s "$pkg" >/dev/null 2>&1; then
+        echo "Remove: $pkg"
+        sudo apt remove -y "$pkg"
+    fi
+done
+
+# ============================================================
+# Docker GPG key
+# ============================================================
+
+echo "[4/6] Add Docker GPG key..."
 
 sudo install -m 0755 -d /etc/apt/keyrings
+
+sudo rm -f /etc/apt/keyrings/docker.asc
 
 sudo curl -fsSL \
     https://download.docker.com/linux/ubuntu/gpg \
@@ -32,12 +111,16 @@ sudo curl -fsSL \
 
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 
-echo "[4/5] Add Docker repository..."
+# ============================================================
+# Docker repository
+# ============================================================
 
-sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+echo "[5/6] Add Docker repository..."
+
+sudo tee /etc/apt/sources.list.d/docker.sources >/dev/null <<EOF
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
-Suites: $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}
 Components: stable
 Architectures: $(dpkg --print-architecture)
 Signed-By: /etc/apt/keyrings/docker.asc
@@ -45,7 +128,11 @@ EOF
 
 sudo apt update
 
-echo "[5/5] Install Docker..."
+# ============================================================
+# Install Docker
+# ============================================================
+
+echo "[6/6] Install Docker Engine + Compose..."
 
 sudo apt install -y \
     docker-ce \
@@ -54,16 +141,40 @@ sudo apt install -y \
     docker-buildx-plugin \
     docker-compose-plugin
 
-sudo systemctl enable docker
-sudo systemctl start docker
+# Enable + start Docker
+sudo systemctl enable --now docker
 
-# Cho user hiện tại chạy docker không cần sudo
-sudo usermod -aG docker "$USER"
+# ============================================================
+# Add user vào docker group
+# ============================================================
+
+if id "$TARGET_USER" >/dev/null 2>&1; then
+    sudo usermod -aG docker "$TARGET_USER"
+fi
+
+# ============================================================
+# Verify
+# ============================================================
 
 echo
-echo "Docker installed:"
+echo "========================================"
+echo " VERIFY DOCKER"
+echo "========================================"
+
 sudo docker --version
 sudo docker compose version
 
 echo
-echo "Docker cài đặt thành công."
+echo "Test Docker daemon..."
+
+sudo docker info >/dev/null
+
+echo
+echo "========================================"
+echo " Docker installed successfully"
+echo "========================================"
+echo
+echo "User '$TARGET_USER' đã được thêm vào group docker."
+echo "Đăng xuất SSH và đăng nhập lại để có thể chạy docker"
+echo "không cần sudo."
+echo
