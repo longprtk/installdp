@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-
+# Ubuntu/Linux
 set -e
 echo
 echo "========================================"
