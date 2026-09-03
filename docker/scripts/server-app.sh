@@ -8,8 +8,11 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+TARGET_USER="${SUDO_USER:-$USER}"
+TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
+
 REPO_URL="https://github.com/vulebaolong/devops_04.git"
-REPO_DIR="$HOME/devops_04"
+REPO_DIR="$TARGET_HOME/devops_04"
 COMPOSE_DIR="$REPO_DIR/docker-compose"
 
 
@@ -39,12 +42,16 @@ clear
 
 title "SETUP APPLICATION SERVER"
 
+echo "User: $TARGET_USER"
+echo "Home: $TARGET_HOME"
+echo
+
 echo "Máy này sẽ tự động:"
 echo
 echo "  1. Update Ubuntu"
 echo "  2. Cài Git"
 echo "  3. Cài Docker + Docker Compose"
-echo "  4. Clone devops_04"
+echo "  4. Clone / update devops_04"
 echo "  5. Copy .env.example -> .env"
 echo "  6. Docker Compose Up"
 echo "  7. Cài Nginx"
@@ -90,30 +97,35 @@ echo
 echo "[OK] Docker Compose:"
 sudo docker compose version
 
+echo
+echo "[OK] Docker daemon:"
+sudo docker info >/dev/null
+echo "Docker daemon đang chạy."
+
 
 # ============================================================
 # 3. CLONE / UPDATE DEVOPS_04
 # ============================================================
 
-title "3/7 - CLONE DEVOPS_04"
-
-cd "$HOME"
+title "3/7 - CLONE / UPDATE DEVOPS_04"
 
 if [ -d "$REPO_DIR/.git" ]; then
 
     echo "Repo đã tồn tại:"
     echo "$REPO_DIR"
     echo
-    echo "Đang git pull..."
 
     cd "$REPO_DIR"
 
-    git pull
+    echo "Đang cập nhật source..."
+
+    git pull --ff-only
 
 else
 
     echo "Đang clone:"
     echo "$REPO_URL"
+    echo
 
     git clone "$REPO_URL" "$REPO_DIR"
 
@@ -136,7 +148,6 @@ ENV_COUNT=0
 
 while IFS= read -r -d '' env_example
 do
-
     folder="$(dirname "$env_example")"
     env_file="$folder/.env"
 
@@ -156,8 +167,13 @@ do
 
     ENV_COUNT=$((ENV_COUNT + 1))
 
-done < <(find "$REPO_DIR" -type f -name ".env.example" -print0)
-
+done < <(
+    find "$REPO_DIR" \
+        -type f \
+        -name ".env.example" \
+        -not -path "*/.git/*" \
+        -print0
+)
 
 echo
 
@@ -181,25 +197,19 @@ fi
 cd "$COMPOSE_DIR"
 
 if [ -f "docker-compose.yml" ]; then
-
     COMPOSE_FILE="docker-compose.yml"
 
 elif [ -f "docker-compose.yaml" ]; then
-
     COMPOSE_FILE="docker-compose.yaml"
 
 elif [ -f "compose.yml" ]; then
-
     COMPOSE_FILE="compose.yml"
 
 elif [ -f "compose.yaml" ]; then
-
     COMPOSE_FILE="compose.yaml"
 
 else
-
     error_exit "Không tìm thấy Docker Compose file trong $COMPOSE_DIR"
-
 fi
 
 
@@ -210,6 +220,15 @@ echo
 echo "[OK] Compose file:"
 echo "$COMPOSE_FILE"
 
+echo
+echo "Kiểm tra cấu hình Docker Compose..."
+
+if sudo docker compose -f "$COMPOSE_FILE" config -q; then
+    echo "[OK] Docker Compose config hợp lệ."
+else
+    error_exit "Docker Compose config không hợp lệ."
+fi
+
 
 # ============================================================
 # 6. START DOCKER COMPOSE
@@ -219,10 +238,16 @@ title "6/7 - START DOCKER COMPOSE"
 
 cd "$COMPOSE_DIR"
 
-echo "Đang build và start containers..."
+echo "Đang build images..."
 echo
 
-sudo docker compose -f "$COMPOSE_FILE" up -d --build
+sudo docker compose -f "$COMPOSE_FILE" build
+
+echo
+echo "Đang start containers..."
+echo
+
+sudo docker compose -f "$COMPOSE_FILE" up -d
 
 
 echo
@@ -251,10 +276,14 @@ else
 
 fi
 
-
 sudo systemctl enable nginx
-sudo systemctl restart nginx
 
+echo
+echo "Kiểm tra cấu hình Nginx..."
+
+sudo nginx -t
+
+sudo systemctl restart nginx
 
 echo
 echo "[OK] Nginx:"
@@ -299,6 +328,13 @@ echo "----------------------------------------"
 cd "$COMPOSE_DIR"
 
 sudo docker compose -f "$COMPOSE_FILE" ps
+
+echo
+echo "----------------------------------------"
+echo "LISTENING PORTS"
+echo "----------------------------------------"
+
+sudo ss -lntp || true
 
 echo
 echo "========================================"
