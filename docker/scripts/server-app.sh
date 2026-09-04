@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-REPO_URL="https://github.com/vulebaolong/devops_04.git"
+REPO_URL="vulebaolong/devops_04.git"
 REPO_DIR="$HOME/devops_04"
 COMPOSE_DIR="$REPO_DIR/docker-compose"
 
@@ -139,7 +139,7 @@ echo "----------------------------------------"
 echo "DOCKER CONTAINERS"
 echo "----------------------------------------"
 
-sudo docker compose -f "$COMPOSE_FILE" ps
+#sudo docker compose -f "$COMPOSE_FILE" ps
 
 title "7/7 - INSTALL NGINX"
 
