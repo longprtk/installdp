@@ -203,97 +203,164 @@ sudo docker compose -f "$COMPOSE_FILE" config -q
 echo "[OK] Docker Compose config hợp lệ."
 
 # ========================================
+# ========================================
 # 6/7 - START DOCKER COMPOSE
 # ========================================
 
 title "6/7 - START DOCKER COMPOSE"
 
-echo "Đang start containers..."
+echo "Chế độ deploy: KHÔNG BUILD trên server."
+echo "Kiểm tra image của từng service..."
 echo
 
-sudo docker compose \
-    -f "$COMPOSE_FILE" \
-    up -d
+AVAILABLE_SERVICES=()
+SKIPPED_SERVICES=()
+
+while IFS= read -r service
+do
+    [ -z "$service" ] && continue
+
+    image="$(
+        sudo docker compose \
+            -f "$COMPOSE_FILE" \
+            config --format json |
+        python3 -c '
+import sys
+import json
+
+data = json.load(sys.stdin)
+service = sys.argv[1]
+
+print(
+    data.get("services", {})
+        .get(service, {})
+        .get("image", "")
+)
+' "$service"
+    )"
+
+    echo "----------------------------------------"
+    echo "Service : $service"
+
+    if [ -z "$image" ]; then
+        echo "[SKIP] Service không có image."
+        echo "[SKIP] Server không được phép build."
+
+        SKIPPED_SERVICES+=("$service")
+        continue
+    fi
+
+    echo "Image   : $image"
+
+    # Image đã tồn tại local
+    if sudo docker image inspect "$image" >/dev/null 2>&1; then
+
+        echo "[OK] Image đã tồn tại local."
+        AVAILABLE_SERVICES+=("$service")
+        continue
+
+    fi
+
+    echo "[INFO] Image chưa có local."
+    echo "[INFO] Đang thử pull từ registry..."
+
+    # Thử pull image
+    if sudo docker compose \
+        -f "$COMPOSE_FILE" \
+        pull "$service"
+    then
+
+        # Kiểm tra lại sau khi pull
+        if sudo docker image inspect "$image" >/dev/null 2>&1; then
+
+            echo "[OK] Pull image thành công."
+            AVAILABLE_SERVICES+=("$service")
+
+        else
+
+            echo "[SKIP] Pull xong nhưng không tìm thấy image:"
+            echo "       $image"
+
+            SKIPPED_SERVICES+=("$service")
+
+        fi
+
+    else
+
+        echo "[SKIP] Không pull được image:"
+        echo "       $image"
+        echo
+        echo "       Có thể image chưa được push lên Docker Hub / GHCR / ECR."
+
+        SKIPPED_SERVICES+=("$service")
+
+    fi
+
+done < <(
+    sudo docker compose \
+        -f "$COMPOSE_FILE" \
+        config --services
+)
 
 echo
-echo "----------------------------------------"
-echo "DOCKER CONTAINERS"
-echo "----------------------------------------"
+echo "========================================"
+echo " IMAGE CHECK RESULT"
+echo "========================================"
 
-sudo docker compose \
-    -f "$COMPOSE_FILE" \
-    ps
+if [ "${#AVAILABLE_SERVICES[@]}" -gt 0 ]; then
 
-# ========================================
-# 7/7 - INSTALL NGINX
-# ========================================
+    echo
+    echo "[OK] Services có thể chạy:"
 
-title "7/7 - INSTALL NGINX"
+    for service in "${AVAILABLE_SERVICES[@]}"
+    do
+        echo "  - $service"
+    done
 
-if command -v nginx >/dev/null 2>&1; then
+fi
 
-    echo "[OK] Nginx đã được cài."
+if [ "${#SKIPPED_SERVICES[@]}" -gt 0 ]; then
 
-else
+    echo
+    echo "[SKIP] Services bị bỏ qua:"
 
-    echo "Đang cài Nginx..."
-
-    sudo apt install -y nginx
+    for service in "${SKIPPED_SERVICES[@]}"
+    do
+        echo "  - $service"
+    done
 
 fi
 
 echo
-echo "Enable + start Nginx..."
 
-sudo systemctl enable --now nginx
+# Không có service nào chạy được
+if [ "${#AVAILABLE_SERVICES[@]}" -eq 0 ]; then
 
-echo
-echo "Kiểm tra Nginx config..."
+    echo "[WARNING] Không có service nào có image để chạy."
+    echo "[WARNING] Bỏ qua bước Docker Compose."
+    echo
 
-sudo nginx -t
+else
 
-# ========================================
-# COMPLETED
-# ========================================
+    echo "Đang start các service hợp lệ..."
+    echo
 
-title "APPLICATION SERVER SETUP COMPLETED"
+    sudo docker compose \
+        -f "$COMPOSE_FILE" \
+        up \
+        -d \
+        --no-build \
+        --pull never \
+        --no-deps \
+        "${AVAILABLE_SERVICES[@]}"
 
-echo
-echo "Git:"
-git --version
+    echo
+    echo "----------------------------------------"
+    echo "DOCKER CONTAINERS"
+    echo "----------------------------------------"
 
-echo
-echo "Docker:"
-sudo docker --version
+    sudo docker compose \
+        -f "$COMPOSE_FILE" \
+        ps
 
-echo
-echo "Docker Compose:"
-sudo docker compose version
-
-echo
-echo "Nginx:"
-nginx -v
-
-echo
-echo "Project:"
-echo "$REPO_DIR"
-
-echo
-echo "Compose directory:"
-echo "$COMPOSE_DIR"
-
-echo
-echo "----------------------------------------"
-echo "RUNNING CONTAINERS"
-echo "----------------------------------------"
-
-cd "$COMPOSE_DIR"
-
-sudo docker compose \
-    -f "$COMPOSE_FILE" \
-    ps
-
-echo
-echo "========================================"
-echo " DONE"
-echo "========================================"
+fi
