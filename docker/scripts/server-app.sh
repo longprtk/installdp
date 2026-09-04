@@ -139,7 +139,7 @@ echo "----------------------------------------"
 echo "DOCKER CONTAINERS"
 echo "----------------------------------------"
 
-#sudo docker compose -f "$COMPOSE_FILE" ps
+sudo docker compose -f "$COMPOSE_FILE" ps
 
 title "7/7 - INSTALL NGINX"
 
