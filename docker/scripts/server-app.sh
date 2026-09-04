@@ -31,7 +31,7 @@ echo "  2. Cài Docker + Docker Compose"
 echo "  3. Clone / update devops_04"
 echo "  4. Copy .env.example -> .env"
 echo "  5. Kiểm tra Docker Compose"
-echo "  6. Build + start containers"
+echo "  6. Start containers"
 echo "  7. Cài Nginx"
 echo
 
@@ -208,12 +208,12 @@ echo "[OK] Docker Compose config hợp lệ."
 
 title "6/7 - START DOCKER COMPOSE"
 
-echo "Đang build và start containers..."
+echo "Đang start containers..."
 echo
 
 sudo docker compose \
     -f "$COMPOSE_FILE" \
-    up -d --build
+    up -d
 
 echo
 echo "----------------------------------------"
