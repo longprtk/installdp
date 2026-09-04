@@ -6,11 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DOMAIN="jenkins.longh.org"
 
 SSL_DIR="/etc/nginx/ssl"
-SSL_CERT_NAME="longh-public.crt"
-SSL_KEY_NAME="longh-private.key"
-
-SSL_CERT_SOURCE="$SCRIPT_DIR/$SSL_CERT_NAME"
-SSL_KEY_SOURCE="$SCRIPT_DIR/$SSL_KEY_NAME"
+SSL_CERT="$SSL_DIR/longh-public.crt"
+SSL_KEY="$SSL_DIR/longh-private.key"
 
 NGINX_SITE="/etc/nginx/sites-available/$DOMAIN"
 NGINX_SITE_ENABLED="/etc/nginx/sites-enabled/$DOMAIN"
@@ -20,12 +17,17 @@ echo "========================================"
 echo "       SETUP CI/CD SERVER"
 echo "========================================"
 
+# ============================================================
+# 1. Update system
+# ============================================================
+
 echo
 echo "[1/6] Updating system..."
+
 sudo apt update
 
 # ============================================================
-# Docker
+# 2. Docker
 # ============================================================
 
 echo
@@ -39,17 +41,19 @@ fi
 bash "$SCRIPT_DIR/docker.sh"
 
 # ============================================================
-# Nginx
+# 3. Nginx
 # ============================================================
 
 echo
 echo "[3/6] Installing Nginx..."
 
 sudo apt install -y nginx
-sudo systemctl enable --now nginx
+
+sudo systemctl enable nginx
+sudo systemctl start nginx
 
 # ============================================================
-# Java 21
+# 4. Java 21
 # ============================================================
 
 echo
@@ -60,10 +64,12 @@ sudo apt install -y \
     openjdk-21-jre \
     wget
 
+echo
+echo "Java version:"
 java -version
 
 # ============================================================
-# Jenkins
+# 5. Jenkins
 # ============================================================
 
 echo
@@ -83,15 +89,19 @@ echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.
 sudo apt update
 sudo apt install -y jenkins
 
-sudo systemctl enable --now jenkins
+sudo systemctl enable jenkins
+sudo systemctl start jenkins
+
+# ============================================================
+# Jenkins -> Docker permission
+# ============================================================
 
 echo
 echo "Adding Jenkins user to Docker group..."
 
 sudo usermod -aG docker jenkins
 
-# Restart Jenkins để process nhận group docker mới.
-# Không cần restart Docker daemon.
+# Restart Jenkins để process Jenkins nhận group docker mới
 sudo systemctl restart jenkins
 
 echo
@@ -101,55 +111,101 @@ if sudo -u jenkins docker ps >/dev/null 2>&1; then
     echo "[OK] Jenkins có thể sử dụng Docker."
 else
     echo "[WARNING] Jenkins chưa truy cập được Docker."
+
+    echo
+    echo "Jenkins user:"
     id jenkins || true
+
+    echo
+    echo "Docker socket:"
     ls -l /var/run/docker.sock || true
 fi
 
 # ============================================================
-# Nginx Reverse Proxy + SSL
+# 6. Nginx Reverse Proxy + SSL
 # ============================================================
 
 echo
 echo "[6/6] Configuring Nginx reverse proxy + SSL..."
 
-echo
-echo "Checking SSL certificate files..."
-
-if [ ! -f "$SSL_CERT_SOURCE" ]; then
-    echo "[ERROR] Không tìm thấy SSL certificate:"
-    echo "        $SSL_CERT_SOURCE"
-    exit 1
-fi
-
-if [ ! -f "$SSL_KEY_SOURCE" ]; then
-    echo "[ERROR] Không tìm thấy SSL private key:"
-    echo "        $SSL_KEY_SOURCE"
-    exit 1
-fi
+# ============================================================
+# Create SSL directory
+# ============================================================
 
 echo
 echo "Creating SSL directory..."
 
 sudo install -d -m 0755 "$SSL_DIR"
 
-echo
-echo "Installing SSL certificate..."
-
-sudo install \
-    -m 0644 \
-    "$SSL_CERT_SOURCE" \
-    "$SSL_DIR/$SSL_CERT_NAME"
+# ============================================================
+# SSL Private Key
+# ============================================================
 
 echo
-echo "Installing SSL private key..."
+echo "Creating SSL private key..."
 
-sudo install \
-    -m 0600 \
-    "$SSL_KEY_SOURCE" \
-    "$SSL_DIR/$SSL_KEY_NAME"
+sudo tee "$SSL_KEY" >/dev/null <<'EOF'
+-----BEGIN PRIVATE KEY-----
+PUT-YOUR-NEW-PRIVATE-KEY-HERE
+-----END PRIVATE KEY-----
+EOF
+
+sudo chmod 600 "$SSL_KEY"
+sudo chown root:root "$SSL_KEY"
+
+# ============================================================
+# SSL Certificate
+# ============================================================
 
 echo
-echo "Creating Nginx site: $DOMAIN"
+echo "Creating SSL certificate..."
+
+sudo tee "$SSL_CERT" >/dev/null <<'EOF'
+-----BEGIN CERTIFICATE-----
+PUT-YOUR-CLOUDFLARE-ORIGIN-CERTIFICATE-HERE
+-----END CERTIFICATE-----
+EOF
+
+sudo chmod 644 "$SSL_CERT"
+sudo chown root:root "$SSL_CERT"
+
+# ============================================================
+# Verify SSL key/certificate
+# ============================================================
+
+echo
+echo "Checking SSL private key..."
+
+if ! sudo openssl pkey \
+    -in "$SSL_KEY" \
+    -check \
+    -noout >/dev/null 2>&1; then
+
+    echo "[ERROR] SSL private key không hợp lệ."
+    exit 1
+fi
+
+echo "[OK] SSL private key hợp lệ."
+
+echo
+echo "Checking SSL certificate..."
+
+if ! sudo openssl x509 \
+    -in "$SSL_CERT" \
+    -noout >/dev/null 2>&1; then
+
+    echo "[ERROR] SSL certificate không hợp lệ."
+    exit 1
+fi
+
+echo "[OK] SSL certificate hợp lệ."
+
+# ============================================================
+# Nginx configuration
+# ============================================================
+
+echo
+echo "Creating Nginx site configuration..."
 
 sudo tee "$NGINX_SITE" >/dev/null <<EOF
 server {
@@ -167,8 +223,8 @@ server {
 
     server_name $DOMAIN;
 
-    ssl_certificate $SSL_DIR/$SSL_CERT_NAME;
-    ssl_certificate_key $SSL_DIR/$SSL_KEY_NAME;
+    ssl_certificate $SSL_CERT;
+    ssl_certificate_key $SSL_KEY;
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -186,25 +242,45 @@ server {
         proxy_set_header Connection "upgrade";
 
         proxy_read_timeout 90s;
+        proxy_connect_timeout 90s;
+        proxy_send_timeout 90s;
+
         proxy_redirect off;
     }
 }
 EOF
 
+# ============================================================
+# Enable Nginx site
+# ============================================================
+
 echo
 echo "Enabling Nginx site..."
 
-sudo ln -sfn "$NGINX_SITE" "$NGINX_SITE_ENABLED"
+sudo ln -sfn \
+    "$NGINX_SITE" \
+    "$NGINX_SITE_ENABLED"
 
-# Disable default Nginx site
-if [ -L /etc/nginx/sites-enabled/default ]; then
-    sudo rm -f /etc/nginx/sites-enabled/default
-fi
+# Remove default nginx site
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# ============================================================
+# Test Nginx
+# ============================================================
 
 echo
 echo "Testing Nginx configuration..."
 
-sudo nginx -t
+if sudo nginx -t; then
+    echo "[OK] Nginx configuration hợp lệ."
+else
+    echo "[ERROR] Nginx configuration không hợp lệ."
+    exit 1
+fi
+
+# ============================================================
+# Reload Nginx
+# ============================================================
 
 echo
 echo "Reloading Nginx..."
@@ -212,7 +288,20 @@ echo "Reloading Nginx..."
 sudo systemctl reload nginx
 
 # ============================================================
-# Final checks
+# Check Jenkins
+# ============================================================
+
+echo
+echo "Checking Jenkins HTTP port..."
+
+if curl -fsS http://127.0.0.1:8080 >/dev/null 2>&1; then
+    echo "[OK] Jenkins đang phản hồi tại 127.0.0.1:8080"
+else
+    echo "[WARNING] Jenkins chưa phản hồi tại 127.0.0.1:8080"
+fi
+
+# ============================================================
+# Final output
 # ============================================================
 
 echo
@@ -221,28 +310,50 @@ echo " CI/CD SERVER SETUP COMPLETED"
 echo "========================================"
 
 echo
+echo "----------------------------------------"
 echo "Docker:"
-sudo docker --version
+echo "----------------------------------------"
+
+sudo docker --version || true
 
 echo
+echo "----------------------------------------"
 echo "Docker Compose:"
-sudo docker compose version
+echo "----------------------------------------"
+
+sudo docker compose version || true
 
 echo
+echo "----------------------------------------"
 echo "Nginx:"
-nginx -v
+echo "----------------------------------------"
+
+nginx -v || true
 
 echo
+echo "----------------------------------------"
 echo "Java:"
-java -version
+echo "----------------------------------------"
+
+java -version || true
 
 echo
-echo "Jenkins status:"
+echo "----------------------------------------"
+echo "Jenkins:"
+echo "----------------------------------------"
+
 sudo systemctl --no-pager status jenkins || true
 
 echo
-echo "Nginx status:"
+echo "----------------------------------------"
+echo "Nginx Status:"
+echo "----------------------------------------"
+
 sudo systemctl --no-pager status nginx || true
+
+# ============================================================
+# Jenkins initial password
+# ============================================================
 
 echo
 echo "----------------------------------------"
@@ -258,11 +369,57 @@ else
     echo "Có thể Jenkins đã được setup trước đó."
 fi
 
+# ============================================================
+# SSL Certificate information
+# ============================================================
+
+echo
+echo
+echo "----------------------------------------"
+echo "SSL Certificate:"
+echo "----------------------------------------"
+
+sudo openssl x509 \
+    -in "$SSL_CERT" \
+    -noout \
+    -subject \
+    -issuer \
+    -dates || true
+
+# ============================================================
+# Done
+# ============================================================
+
 echo
 echo
 echo "========================================"
-echo " Jenkins URL"
+echo "            SETUP SUCCESS"
 echo "========================================"
+
 echo
+echo "Jenkins:"
 echo "https://$DOMAIN"
+
 echo
+echo "HTTP:"
+echo "http://$DOMAIN"
+echo "-> redirect sang HTTPS"
+
+echo
+echo "Jenkins local port:"
+echo "http://127.0.0.1:8080"
+
+echo
+echo "SSL certificate:"
+echo "$SSL_CERT"
+
+echo
+echo "SSL private key:"
+echo "$SSL_KEY"
+
+echo
+echo "Nginx config:"
+echo "$NGINX_SITE"
+
+echo
+echo "========================================"
